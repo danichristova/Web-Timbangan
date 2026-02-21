@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Monitoring Timbangan</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <h1>Monitoring Timbangan</h1>
+
+  <div class="card">
+    Berat:
+    <h2 id="weight">0</h2>
+  </div>
+
+  <div class="card">
+    Jumlah Botol:
+    <h2 id="bottleCount">0</h2>
+  </div>
+
+  <div class="card">
+    Status:
+    <h2 id="status">-</h2>
+  </div>
+
+  <div class="card">
+    Pengaturan Berat Per Botol:
+    <br><br>
+    <input type="number" id="bottleWeight" placeholder="Berat per botol (gram)" min="0" step="0.1">
+    <br><br>
+    <button onclick="saveBottleWeight()">Simpan</button>
+  </div>
+
+  <div class="card">
+    Kalibrasi:
+    <br><br>
+    <input type="number" id="known" placeholder="Berat diketahui (gram)">
+    <br><br>
+    <button onclick="kalibrasi()">Kalibrasi</button>
+    <button onclick="tare()">Tare</button>
+  </div>
+
+  <div class="card">
+    Log:
+    <h3 id="log">-</h3>
+  </div>
+
+  <script type="module" src="script.js"></script>
+
+</body>
+
+</html>
