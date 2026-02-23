@@ -139,6 +139,17 @@ window.kalibrasi = function () {
   set(ref(db, "scale/log"), "Kalibrasi dari WEB: " + berat + " gram");
 }
 
+// Kontrol pin 21 dari web
+window.openPin = function () {
+  set(ref(db, "command/pin21"), 1);
+  set(ref(db, "scale/log"), "PIN21: BUKA dari WEB");
+}
+
+window.closePin = function () {
+  set(ref(db, "command/pin21"), 0);
+  set(ref(db, "scale/log"), "PIN21: TUTUP dari WEB");
+}
+
 // Simpan berat per botol
 window.saveBottleWeight = function () {
   const weight = document.getElementById("bottleWeight").value;
