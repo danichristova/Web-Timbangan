@@ -29,87 +29,44 @@ FirebaseConfig config;
 #define EEPROM_SIZE 64
 #define CAL_ADDR 0
 
-// ================= AVERAGE 5 DETIK =================
-unsigned long avgStartTime = 0;
-float avgTotal = 0;
-int avgCount = 0;
-float avgWeight = 0;
-bool avgReady = false;
-
 // ================= VAR =================
+float calFactor = 30.3;
 float lastWeight = 0;
-float calFactor = 21.18;
 
-unsigned long lastSend = 0;
 unsigned long warmupTime = 0;
-unsigned long detectTime = 0;
+unsigned long calibrationStartTime = 0;
+unsigned long tareStabilizeTime = 0;
+int state = 0;  // 0=Booting, 1=Siap Tare, 2=Tare Stabilizing, 3=Siap Kalibrasi, 4=Kalibrasi Loading, 5=Stabil
 
-int state = 0;
+// ================= MOVING AVERAGE BUFFER =================
+#define AVG_BUFFER_SIZE 10
+float avgBuffer[AVG_BUFFER_SIZE];
+int avgIndex = 0;
+bool avgBufferFull = false;
 
-bool baseSet = false;
-float baseWeight = 0;
-
-// ================= AVERAGE =================
-float readStableWeight() {
-
-  float total = 0;
-  int samples = 15;
-
-  for (int i = 0; i < samples; i++) {
-    while (!LoadCell.update())
-      ;
-    total += LoadCell.getData();
+float getMovingAverage(float newValue) {
+  avgBuffer[avgIndex] = newValue;
+  avgIndex = (avgIndex + 1) % AVG_BUFFER_SIZE;
+  
+  if (avgIndex == 0) avgBufferFull = true;
+  
+  float sum = 0;
+  int count = avgBufferFull ? AVG_BUFFER_SIZE : avgIndex;
+  
+  for (int i = 0; i < count; i++) {
+    sum += avgBuffer[i];
   }
-
-  return total / samples;
+  
+  return count > 0 ? sum / count : newValue;
 }
 
-float read5SecondAverage() {
-
-  while (!LoadCell.update())
-    ;
-
-  float w = LoadCell.getData();
-
-  if (isnan(w) || isinf(w)) return avgWeight;
-
-  avgTotal += w;
-  avgCount++;
-
-  // Mulai timer
-  if (avgStartTime == 0) {
-    avgStartTime = millis();
-  }
-
-  // Jika sudah 5 detik
-  if (millis() - avgStartTime >= 5000) {
-
-    if (avgCount > 0) {
-      avgWeight = avgTotal / avgCount;
-    }
-
-    Serial.print("AVG 5 DETIK: ");
-    Serial.println(avgWeight);
-
-    avgTotal = 0;
-    avgCount = 0;
-    avgStartTime = millis();
-
-    avgReady = true;
-  }
-
-  return avgWeight;
-}
+// ================= UPDATE TIMER =================
+unsigned long updateTimer = 0;
 
 // ================= FILTER =================
 float filterWeight(float newWeight) {
-
-  float diff = newWeight - lastWeight;
-
-  if (abs(diff) < 0.5) return lastWeight;
-
-  lastWeight = lastWeight * 0.85 + newWeight * 0.15;
-
+  // Exponential moving average dengan alpha yang lebih baik untuk stabilitas
+  lastWeight = lastWeight * 0.95 + newWeight * 0.05;
   return lastWeight;
 }
 
@@ -129,46 +86,23 @@ void setup() {
   // WIFI
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
     delay(500);
+    Serial.print(".");
   }
 
+  Serial.println("");
   Serial.println("WiFi Connected");
 
-  String ipAddress = WiFi.localIP().toString();
-  Serial.print("IP Address: ");
-  Serial.println(ipAddress);
-
-  Firebase.RTDB.setString(&fbdo, "scale/ip", ipAddress);
-
   // ================= OTA =================
-  ArduinoOTA.setHostname("ESP-Timbangan");
-
-  ArduinoOTA.onStart([]() {
-    Serial.println("OTA Start");
-  });
-
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nOTA End");
-  });
-
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-  });
-
-  ArduinoOTA.setPassword("ta01");  // <- disini
+  ArduinoOTA.setHostname("ESP-TA01");
+  ArduinoOTA.setPassword("ta01");
 
   ArduinoOTA.begin();
 
   Serial.println("OTA Ready");
-  Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  // FIREBASE
+  // ================= FIREBASE =================
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
   auth.user.email = USER_EMAIL;
@@ -179,27 +113,29 @@ void setup() {
 
   Serial.println("Firebase Ready");
 
-  // EEPROM
+  // Kirim IP ke Firebase
+  Firebase.RTDB.setString(&fbdo, "scale/ip", WiFi.localIP().toString());
+
+  // ================= EEPROM =================
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.get(CAL_ADDR, calFactor);
+
+  if (isnan(calFactor) || calFactor == 0) {
+    calFactor = 21.18;
+  }
 
   Serial.print("CalFactor: ");
   Serial.println(calFactor);
 
-  // HX711
+  // ================= HX711 =================
   LoadCell.begin();
-  LoadCell.start(2000, true);
-
-  // Pakai calFactor default
+  LoadCell.start(2000);
   LoadCell.setCalFactor(calFactor);
 
-  // Reset Firebase
-  Firebase.RTDB.setFloat(&fbdo, "scale/weight", 0);
   Firebase.RTDB.setString(&fbdo, "scale/status", "Booting...");
-  Firebase.RTDB.setFloat(&fbdo, "command/kalibrasi", 0);
+  Firebase.RTDB.setFloat(&fbdo, "scale/weight", 0);
 
   warmupTime = millis();
-  state = 0;
 
   Serial.println("BOOT DONE");
 }
@@ -208,108 +144,109 @@ void setup() {
 void loop() {
 
   ArduinoOTA.handle();
+  LoadCell.update();
 
-  // Update IP kalau berubah
-  static String lastIP = "";
-  String currentIP = WiFi.localIP().toString();
+  float weight = LoadCell.getData();
 
-  if (currentIP != lastIP) {
-    lastIP = currentIP;
-    Firebase.RTDB.setString(&fbdo, "scale/ip", currentIP);
-  }
+  if (isnan(weight)) weight = 0;
 
-  if (!LoadCell.update()) return;
-
-  float weight = read5SecondAverage();
   weight = filterWeight(weight);
 
-  // Cegah NaN
-  if (isnan(weight) || isinf(weight)) weight = 0;
-
-  if (abs(weight) < 1) weight = 0;
-
-  Serial.print("Weight: ");
-  Serial.println(weight);
-
-  // Kirim tiap 5 detik
-  if (Firebase.ready() && avgReady) {
-
-    Firebase.RTDB.setFloat(&fbdo, "scale/weight", weight);
-
-    avgReady = false;
-    lastSend = millis();
+  // ================= UPDATE SETIAP 1 DETIK =================
+  if (millis() - updateTimer > 1000) {
+    updateTimer = millis();
   }
 
-  // ================= STATE MACHINE =================
+  // ================= FILTER & MOVING AVERAGE =================
+  weight = filterWeight(weight);
+  weight = getMovingAverage(weight);
 
-  // WARMUP
+  // ================= STATE =================
+
+  // STATE 0: WARMUP 60 DETIK
   if (state == 0) {
 
-    int sisa = 30 - (millis() - warmupTime) / 1000;
+    int sisa = 60 - (millis() - warmupTime) / 1000;
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Booting " + String(sisa) + "s");
 
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Warmup " + String(sisa) + " detik");
-
-    if (millis() - warmupTime > 30000) {
-
-      Serial.println("START TARE");
-
-      LoadCell.tareNoDelay();
-      sendLog("TARE START");
-
+    if (millis() - warmupTime > 60000) {
+      sendLog("BOOT DONE");
       state = 1;
     }
   }
 
-  // TARE
+  // STATE 1: READY FOR TARE
   else if (state == 1) {
 
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Tare...");
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Siap Tare");
 
-    if (LoadCell.getTareStatus()) {
+    // TARE dari WEB
+    if (Firebase.RTDB.getInt(&fbdo, "command/tare")) {
 
-      sendLog("TARE DONE");
-      state = 2;
+      if (fbdo.intData() == 1) {
+
+        LoadCell.refreshDataSet();
+        LoadCell.tare();
+        
+        // Clear moving average buffer setelah tare
+        avgIndex = 0;
+        avgBufferFull = false;
+        for (int i = 0; i < AVG_BUFFER_SIZE; i++) {
+          avgBuffer[i] = 0;
+        }
+        
+        tareStabilizeTime = millis();
+        Firebase.RTDB.setInt(&fbdo, "command/tare", 0);
+
+        sendLog("TARE STABILIZING...");
+        state = 2;  // Go to stabilizing state
+      }
     }
   }
 
-  // WAIT OBJECT
+  // STATE 2: TARE STABILIZATION (3 DETIK)
   else if (state == 2) {
 
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Letakkan benda");
+    int sisa = 3 - (millis() - tareStabilizeTime) / 1000;
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Tare Stabilizing " + String(sisa) + "s");
 
-    if (!baseSet) {
-      baseWeight = weight;
-      baseSet = true;
-    }
-
-    if (weight - baseWeight > 10 || weight - baseWeight < 10) {
-
-      sendLog("OBJECT DETECTED");
-      detectTime = millis();
-      state = 3;
+    if (millis() - tareStabilizeTime > 3000) {
+      sendLog("TARE DONE");
+      state = 3;  // Go to calibration ready state
     }
   }
 
-  // WAIT STABLE
+  // STATE 3: READY FOR CALIBRATION
   else if (state == 3) {
 
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Menunggu stabil");
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Siap Kalibrasi");
 
-    if (millis() - detectTime > 20000) {
-
-      sendLog("READY CALIB");
-      state = 4;
-    }
-  }
-
-  // CALIBRATION
-  else if (state == 4) {
-
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Masukkan berat di web");
-
+    // KALIBRASI dari WEB
     if (Firebase.RTDB.getFloat(&fbdo, "command/kalibrasi")) {
 
       float known = fbdo.floatData();
+
+      if (known > 0) {
+
+        calibrationStartTime = millis();
+        state = 4;
+
+        sendLog("Kalibrasi dimulai...");
+      }
+    }
+  }
+
+  // STATE 4: CALIBRATION LOADING (20 DETIK)
+  else if (state == 4) {
+
+    int sisa = 20 - (millis() - calibrationStartTime) / 1000;
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Kalibrasi " + String(sisa) + "s");
+
+    if (millis() - calibrationStartTime > 20000) {
+
+      float known = 0;
+      Firebase.RTDB.getFloat(&fbdo, "command/kalibrasi");
+      known = fbdo.floatData();
 
       if (known > 0) {
 
@@ -325,28 +262,50 @@ void loop() {
         Firebase.RTDB.setFloat(&fbdo, "scale/cal_factor", newCal);
         Firebase.RTDB.setFloat(&fbdo, "command/kalibrasi", 0);
 
-        sendLog("CALIB DONE");
-
+        sendLog("KALIBRASI SELESAI");
         state = 5;
       }
     }
   }
 
-  // NORMAL
+  // STATE 5: RUNNING STABLE
   else if (state == 5) {
 
-    Firebase.RTDB.setString(&fbdo, "scale/status", "Running");
+    Firebase.RTDB.setString(&fbdo, "scale/status", "Stabil");
 
-    if (Firebase.RTDB.getBool(&fbdo, "scale/tare")) {
+    // TARE dari WEB
+    if (Firebase.RTDB.getInt(&fbdo, "command/tare")) {
 
-      if (fbdo.boolData()) {
+      if (fbdo.intData() == 1) {
 
-        LoadCell.tareNoDelay();
-        Firebase.RTDB.setBool(&fbdo, "scale/tare", false);
+        LoadCell.tare();
+        Firebase.RTDB.setInt(&fbdo, "command/tare", 0);
 
-        sendLog("MANUAL TARE");
+        sendLog("TARE DONE");
       }
     }
+
+    // KALIBRASI ulang
+    if (Firebase.RTDB.getFloat(&fbdo, "command/kalibrasi")) {
+
+      float known = fbdo.floatData();
+
+      if (known > 0) {
+
+        calibrationStartTime = millis();
+        state = 4;
+
+        sendLog("Kalibrasi ulang dimulai...");
+      }
+    }
+  }
+
+  // ================= KIRIM DATA SETIAP 1 DETIK =================
+  if (Firebase.ready() && millis() - updateTimer > 1000) {
+
+    Firebase.RTDB.setFloat(&fbdo, "scale/weight", weight);
+
+    updateTimer = millis();
   }
 
   delay(50);

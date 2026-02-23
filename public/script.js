@@ -14,6 +14,11 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
+// ================= OFFLINE DETECTION =================
+let lastWeight = 0;
+let lastWeightChangeTime = Date.now();
+let offlineCheckInterval = null;
+
 // Inisialisasi berat per botol dari localStorage
 let bottleWeight = parseFloat(localStorage.getItem("bottleWeight")) || 0;
 document.getElementById("bottleWeight").value = bottleWeight;
@@ -27,15 +32,79 @@ onValue(scaleRef, (snapshot) => {
   if (!data) return;
 
   const weight = parseFloat(data.weight);
+  
+  // Deteksi perubahan weight untuk offline detection
+  if (weight !== lastWeight) {
+    lastWeight = weight;
+    lastWeightChangeTime = Date.now();
+  }
+
   document.getElementById("weight").innerText = Math.round(weight) + " gram";
   
   // Hitung jumlah botol
   calculateBottles(weight);
   
-  document.getElementById("status").innerText = data.status;
+  let status = data.status || "-";
+  
+  // Cek offline: jika tidak ada perubahan weight dalam 10 detik
+  const timeSinceLastChange = Date.now() - lastWeightChangeTime;
+  if (timeSinceLastChange > 70000 && !status.includes("Booting") && !status.includes("Offline")) {
+    status = "Offline";
+  }
+  
+  document.getElementById("status").innerText = status;
   document.getElementById("log").innerText = data.log;
   document.getElementById("ip").innerText = data.ip || "-";
+
+  // Disable buttons berdasarkan status
+  updateButtonState(status);
 });
+
+// Update button state berdasarkan status
+window.updateButtonState = function (status) {
+  const tareBtn = document.querySelector('button:contains("Tare")') || 
+                  Array.from(document.querySelectorAll('button')).find(btn => btn.innerText === "Tare");
+  const kalibrasiBtn = document.querySelector('button:contains("Kalibrasi")') || 
+                       Array.from(document.querySelectorAll('button')).find(btn => btn.innerText === "Kalibrasi");
+  const knownInput = document.getElementById("known");
+
+  if (status.includes("Booting")) {
+    // Disable semua saat booting
+    if (tareBtn) tareBtn.disabled = true;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = true;
+    if (knownInput) knownInput.disabled = true;
+  } else if (status.includes("Offline")) {
+    // Disable semua saat offline
+    if (tareBtn) tareBtn.disabled = true;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = true;
+    if (knownInput) knownInput.disabled = true;
+  } else if (status.includes("Tare Stabilizing")) {
+    // Disable semua saat tare stabilizing
+    if (tareBtn) tareBtn.disabled = true;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = true;
+    if (knownInput) knownInput.disabled = true;
+  } else if (status.includes("Siap Tare")) {
+    // Enable tare, disable kalibrasi
+    if (tareBtn) tareBtn.disabled = false;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = true;
+    if (knownInput) knownInput.disabled = true;
+  } else if (status.includes("Siap Kalibrasi")) {
+    // Enable kalibrasi, disable tare
+    if (tareBtn) tareBtn.disabled = true;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = false;
+    if (knownInput) knownInput.disabled = false;
+  } else if (status.includes("Kalibrasi")) {
+    // Disable semua saat kalibrasi loading
+    if (tareBtn) tareBtn.disabled = true;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = true;
+    if (knownInput) knownInput.disabled = true;
+  } else if (status.includes("Stabil")) {
+    // Enable semua
+    if (tareBtn) tareBtn.disabled = false;
+    if (kalibrasiBtn) kalibrasiBtn.disabled = false;
+    if (knownInput) knownInput.disabled = false;
+  }
+}
 
 // Fungsi menghitung jumlah botol
 window.calculateBottles = function (totalWeight) {
