@@ -27,13 +27,14 @@ onValue(scaleRef, (snapshot) => {
   if (!data) return;
 
   const weight = parseFloat(data.weight);
-  document.getElementById("weight").innerText = data.weight + " gram";
+  document.getElementById("weight").innerText = Math.round(weight) + " gram";
   
   // Hitung jumlah botol
   calculateBottles(weight);
   
   document.getElementById("status").innerText = data.status;
   document.getElementById("log").innerText = data.log;
+  document.getElementById("ip").innerText = data.ip || "-";
 });
 
 // Fungsi menghitung jumlah botol

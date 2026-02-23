@@ -4,6 +4,14 @@ body {
   background: #f0f0f0;
 }
 
+#ip {
+  font-weight: bold;
+}
+
+p {
+  text-align: center;
+}
+
 .card {
   background: white;
   margin: 20px auto;
